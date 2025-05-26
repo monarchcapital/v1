@@ -27,10 +27,6 @@ PREDICTION_LOG_COLUMNS = ['prediction_generation_date', 'prediction_for_date', '
 
 # --- Prediction Logging Functions ---
 def save_prediction(ticker, prediction_for_date, predicted_value, actual_close_price, model_name, prediction_generation_date, training_end_date_used):
-    """
-    Saves a single prediction entry to a CSV log file.
-    Includes logic to prevent duplicate entries based on date, ticker, model, and generation date.
-    """
     predictions_dir = "monarch_predictions_data"
     os.makedirs(predictions_dir, exist_ok=True)
     file_path = os.path.join(predictions_dir, f"{ticker}_predictions_log.csv")
@@ -43,7 +39,6 @@ def save_prediction(ticker, prediction_for_date, predicted_value, actual_close_p
         'predicted_value': predicted_value,
         'actual_close': actual_close_price if actual_close_price is not None else np.nan
     }
-    # Ensure training_end_date_used is formatted correctly
     if isinstance(training_end_date_used, (date, datetime)):
         new_data_dict['training_end_date_used'] = training_end_date_used.strftime("%Y-%m-%d")
     else:
@@ -67,7 +62,6 @@ def save_prediction(ticker, prediction_for_date, predicted_value, actual_close_p
                 # Coerce types needed for duplicate check
                 existing_df['prediction_generation_date'] = pd.to_datetime(existing_df['prediction_generation_date'], errors='coerce')
                 existing_df['prediction_for_date'] = pd.to_datetime(existing_df['prediction_for_date'], errors='coerce')
-                existing_df['training_end_date_used'] = pd.to_datetime(existing_df['training_end_date_used'], errors='coerce') # Ensure this is also datetime
                 # Ensure 'ticker' and 'model_used' are strings for comparison
                 existing_df['ticker'] = existing_df['ticker'].astype(str)
                 existing_df['model_used'] = existing_df['model_used'].astype(str)
@@ -84,18 +78,15 @@ def save_prediction(ticker, prediction_for_date, predicted_value, actual_close_p
             # Duplicate check logic
             is_duplicate = False
             if not existing_df.empty:
-                 # Ensure date components are correctly extracted for comparison
-                check_gen_date = prediction_generation_date.date() # prediction_generation_date is datetime.datetime
-                check_for_date = prediction_for_date # prediction_for_date is already datetime.date
-                check_training_end_date = training_end_date_used # training_end_date_used is already datetime.date
+                 # Ensure date columns are comparable
+                check_gen_date = prediction_generation_date.date()
+                check_for_date = prediction_for_date.date()
 
                 mask = (
                     (existing_df['prediction_generation_date'].dt.date == check_gen_date) &
                     (existing_df['prediction_for_date'].dt.date == check_for_date) &
                     (existing_df['ticker'] == ticker) &
-                    (existing_df['model_used'] == model_name) &
-                    # IMPORTANT: Include training_end_date_used in duplicate check
-                    (existing_df['training_end_date_used'].dt.date == check_training_end_date)
+                    (existing_df['model_used'] == model_name)
                 )
                 is_duplicate = mask.any()
 
@@ -108,10 +99,6 @@ def save_prediction(ticker, prediction_for_date, predicted_value, actual_close_p
         st.error(f"Error saving prediction for {ticker} on {prediction_for_date.strftime('%Y-%m-%d')}: {e}")
 
 def load_past_predictions(ticker):
-    """
-    Loads past predictions for a given ticker from its CSV log file.
-    Handles empty or corrupted files gracefully.
-    """
     predictions_dir = "monarch_predictions_data"
     file_path = os.path.join(predictions_dir, f"{ticker}_predictions_log.csv")
     
@@ -135,7 +122,7 @@ def load_past_predictions(ticker):
             
             # Ensure 'ticker' and 'model_used' are strings
             df['ticker'] = df['ticker'].astype(str)
-            df['model_used'] = df['model_used'].astype(str) # Corrected from model to model_used
+            df['model_used'] = df['model_used'].astype(str)
 
             return df
         except pd.errors.EmptyDataError: # File had only a header
@@ -144,24 +131,6 @@ def load_past_predictions(ticker):
             st.error(f"Error loading past predictions for {ticker} from {file_path}: {e}. File might be corrupted.")
             return pd.DataFrame(columns=PREDICTION_LOG_COLUMNS)
     return pd.DataFrame(columns=PREDICTION_LOG_COLUMNS)
-
-def get_previous_trading_day(current_date):
-    """
-    Calculates the previous trading day (skipping weekends).
-    Args:
-        current_date (datetime.date or pandas.Timestamp): The date for which to find the previous trading day.
-    Returns:
-        datetime.date: The previous trading day.
-    """
-    # Convert to datetime.date if it's a pandas.Timestamp
-    if isinstance(current_date, pd.Timestamp):
-        current_date = current_date.date()
-
-    prev_day = current_date - timedelta(days=1)
-    # Loop backwards until a weekday is found
-    while prev_day.weekday() >= 5: # Saturday (5) or Sunday (6)
-        prev_day -= timedelta(days=1)
-    return prev_day
 
 
 # --- UI Elements ---
@@ -262,10 +231,6 @@ log_placeholder = log_expander.empty()
 # --- Data Loading & Feature Engineering ---
 @st.cache_data(show_spinner="Fetching market data...", ttl=timedelta(hours=1))
 def download_data(ticker_symbol):
-    """
-    Downloads historical stock data for a given ticker symbol using yfinance.
-    Performs initial data cleaning and renames columns for consistency.
-    """
     try:
         data_df = yf.download(ticker_symbol, period="max", progress=False)
         if data_df.empty:
@@ -302,32 +267,22 @@ def download_data(ticker_symbol):
         return pd.DataFrame()
 
 def create_features(df, lags, ma_wins, std_wins, rsi_w, macd_s, macd_l, macd_sig, bb_w, bb_std, atr_w, stoch_k, stoch_d):
-    """
-    Creates various technical indicator features and lag features from the raw stock data.
-    """
     df_feat = df.copy()
     df_feat.columns = df_feat.columns.astype(str)
     df_feat['Day'] = np.arange(len(df_feat))
 
-    # Lag features
     for lag in lags:
         df_feat[f'Close_Lag_{lag}'] = df_feat['Close'].shift(lag)
         df_feat[f'Open_Lag_{lag}'] = df_feat['Open'].shift(lag)
-    
-    # Moving Averages
     for win in ma_wins: df_feat[f'MA_{win}'] = df_feat['Close'].rolling(window=win).mean()
-    
-    # Volatility (Standard Deviation)
     for win in std_wins: df_feat[f'Volatility_{win}'] = df_feat['Close'].rolling(window=win).std()
 
-    # On-Balance Volume (OBV)
     df_feat['Price_Change'] = df_feat['Close'].diff()
     df_feat['Volume_Direction'] = 0
     df_feat.loc[df_feat['Price_Change'] > 0, 'Volume_Direction'] = df_feat['Volume']
     df_feat.loc[df_feat['Price_Change'] < 0, 'Volume_Direction'] = -df_feat['Volume']
     df_feat['OBV'] = df_feat['Volume_Direction'].cumsum()
 
-    # Relative Strength Index (RSI)
     delta = df_feat['Close'].diff()
     gain = (delta.where(delta > 0, 0)).fillna(0)
     loss = (-delta.where(delta < 0, 0)).fillna(0)
@@ -336,37 +291,31 @@ def create_features(df, lags, ma_wins, std_wins, rsi_w, macd_s, macd_l, macd_sig
     rs = avg_gain / avg_loss
     df_feat['RSI'] = 100 - (100 / (1 + rs))
 
-    # Moving Average Convergence Divergence (MACD)
     exp1 = df_feat['Close'].ewm(span=macd_s, adjust=False).mean()
     exp2 = df_feat['Close'].ewm(span=macd_l, adjust=False).mean()
     df_feat['MACD'] = exp1 - exp2
     df_feat['MACD_Signal'] = df_feat['MACD'].ewm(span=macd_sig, adjust=False).mean()
     df_feat['MACD_Hist'] = df_feat['MACD'] - df_feat['MACD_Signal']
 
-    # Bollinger Bands (BB)
     df_feat['BB_Middle'] = df_feat['Close'].rolling(window=bb_w).mean()
     rolling_std = df_feat['Close'].rolling(window=bb_w).std()
     std_multiplier_series = pd.Series((rolling_std.values * bb_std).ravel(), index=df_feat.index)
     df_feat['BB_Upper'] = df_feat['BB_Middle'] + std_multiplier_series
     df_feat['BB_Lower'] = df_feat['BB_Middle'] - std_multiplier_series
 
-    # Average True Range (ATR)
     df_feat['High_Low'] = df_feat['High'] - df_feat['Low']
     df_feat['High_PrevClose'] = np.abs(df_feat['High'] - df_feat['Close'].shift(1))
     df_feat['Low_PrevClose'] = np.abs(df_feat['Low'] - df_feat['Close'].shift(1))
     df_feat['True_Range'] = df_feat[['High_Low', 'High_PrevClose', 'Low_PrevClose']].max(axis=1)
     df_feat['ATR'] = df_feat['True_Range'].ewm(span=atr_w, adjust=False).mean()
 
-    # Stochastic Oscillator
     lowest_low = df_feat['Low'].rolling(window=stoch_k).min()
     highest_high = df_feat['High'].rolling(window=stoch_k).max()
     df_feat['%K'] = ((df_feat['Close'] - lowest_low) / (highest_high - lowest_low).replace(0, np.nan)) * 100
     df_feat['%D'] = df_feat['%K'].rolling(window=stoch_d).mean()
 
-    # Drop intermediate columns used for feature calculation
     df_feat.drop(columns=['Price_Change', 'Volume_Direction', 'High_Low', 'High_PrevClose', 'Low_PrevClose', 'True_Range'], errors='ignore', inplace=True)
     
-    # Drop rows with NaN values introduced by feature creation (e.g., due to rolling windows or shifts)
     cols_to_keep_for_iterative = ['Date', 'Open', 'High', 'Low', 'Close', 'Volume']
     feature_cols_only = [col for col in df_feat.columns if col not in cols_to_keep_for_iterative]
     df_feat_cleaned = df_feat.dropna(subset=feature_cols_only).copy()
@@ -374,7 +323,6 @@ def create_features(df, lags, ma_wins, std_wins, rsi_w, macd_s, macd_l, macd_sig
 
 # --- Model Training & Prediction ---
 def get_model(name):
-    """Returns an instance of the specified machine learning model."""
     if name == 'Random Forest': return RandomForestRegressor(n_estimators=100, random_state=42, n_jobs=-1)
     if name == 'Linear Regression': return LinearRegression(n_jobs=-1)
     if name == 'SVR': return SVR(kernel='rbf', C=100, gamma=0.1) # Epsilon default is fine
@@ -382,13 +330,9 @@ def get_model(name):
     if name == 'Gradient Boosting': return GradientBoostingRegressor(n_estimators=100, learning_rate=0.1, max_depth=3, random_state=42)
     if name == 'KNN': return KNeighborsRegressor(n_neighbors=7, n_jobs=-1) # Tuned n_neighbors slightly
     if name == 'Decision Tree': return DecisionTreeRegressor(random_state=42, max_depth=10)
-    return LinearRegression(n_jobs=-1) # Default fallback
+    return LinearRegression(n_jobs=-1)
 
 def _train_single_model(X_scaled, y, model_name, perform_tuning_flag, display_name):
-    """
-    Trains a single model, optionally performing hyperparameter tuning.
-    Logs messages to a global list.
-    """
     global training_messages_log # Use global list
     base_model = get_model(model_name)
     trained_model = None
@@ -407,7 +351,7 @@ def _train_single_model(X_scaled, y, model_name, perform_tuning_flag, display_na
 
         if model_name in param_dist:
             n_iter, cv_folds = 15, 3 # Reduced for speed
-            if len(X_scaled) < cv_folds * 2: # Ensure enough samples for CV
+            if len(X_scaled) < cv_folds * 2: # Ensure enough samples
                 training_messages_log.append(f"⚠️ Not enough data for {cv_folds}-fold CV for {display_name} ({len(X_scaled)} samples). Skipping tuning.")
                 perform_tuning_flag = False
             
@@ -432,7 +376,7 @@ def _train_single_model(X_scaled, y, model_name, perform_tuning_flag, display_na
         try:
             if model_name == 'XGBoost':
                  train_size = int(len(X_scaled) * 0.8)
-                 if len(X_scaled) - train_size > 10: # Ensure validation set is meaningful
+                 if len(X_scaled) - train_size > 10: # Ensure val set is meaningful
                      X_train_split, X_val_split = X_scaled[:train_size], X_scaled[train_size:]
                      y_train_split, y_val_split = y[:train_size], y[train_size:]
                      base_model.fit(X_train_split, y_train_split, eval_set=[(X_val_split, y_val_split)], verbose=False)
@@ -450,10 +394,6 @@ def _train_single_model(X_scaled, y, model_name, perform_tuning_flag, display_na
     return trained_model, best_params
 
 def train_models_pipeline(df_train, model_choice_main, perform_tuning_main):
-    """
-    Trains models for Close, Open, and Volatility targets using the specified model type.
-    Returns a dictionary of trained models, scalers, and features.
-    """
     global training_messages_log
     if df_train.empty:
         training_messages_log.append("❌ Training data is empty. Cannot train models.")
@@ -462,12 +402,9 @@ def train_models_pipeline(df_train, model_choice_main, perform_tuning_main):
     base_feature_cols = [col for col in df_train.columns if col not in ['Date']]
     
     # Define features, ensuring no target leakage for each model
-    # Features for Close price prediction should not include future prices or volatility related to future prices
     feature_cols_close = [col for col in base_feature_cols if col not in ['Close', 'Open', 'High', 'Low', 'Volume'] + [f'Volatility_{w}' for w in std_windows_list]]
-    # Features for Open price prediction
     feature_cols_open = [col for col in base_feature_cols if col not in ['Open', 'Close', 'High', 'Low', 'Volume'] + [f'Volatility_{w}' for w in std_windows_list]]
     volatility_target_col_name = f'Volatility_{std_windows_list[0]}' if std_windows_list else None
-    # Features for Volatility prediction
     feature_cols_volatility = [col for col in base_feature_cols if col not in [f'Volatility_{w}' for w in std_windows_list] + ['Close', 'Open', 'High', 'Low', 'Volume']]
 
     models_data = {}
@@ -514,9 +451,6 @@ def train_models_pipeline(df_train, model_choice_main, perform_tuning_main):
     return models_data
 
 def generate_predictions_pipeline(df_data, models_info_dict):
-    """
-    Generates predictions for various targets using the provided trained models.
-    """
     predictions_output = {}
     if df_data.empty or not models_info_dict:
         return predictions_output
@@ -629,7 +563,6 @@ if not data.empty:
 
         next_day_predictions_list.append({'Model': model_choice, 'Predicted Close': pred_close_main, 'Predicted Open': pred_open_main, 'Predicted Volatility': pred_vol_main})
         if pred_close_main is not None:
-            # For the next trading day prediction, training_end_date_used is naturally end_bt
             save_prediction(ticker, next_trading_day, pred_close_main, np.nan, model_choice, datetime.now(), end_bt)
 
         # Comparison Models Next Day Prediction
@@ -646,7 +579,6 @@ if not data.empty:
                 pred_vol_comp = next_day_preds_comp_dict.get('Volatility', {}).get('Predicted Volatility', pd.Series()).iloc[-1] if not next_day_preds_comp_dict.get('Volatility', {}).empty else None
                 next_day_predictions_list.append({'Model': comp_model_name, 'Predicted Close': pred_close_comp, 'Predicted Open': pred_open_comp, 'Predicted Volatility': pred_vol_comp})
                 if pred_close_comp is not None:
-                    # For the next trading day prediction, training_end_date_used is naturally end_bt
                     save_prediction(ticker, next_trading_day, pred_close_comp, np.nan, comp_model_name, datetime.now(), end_bt)
         
         df_next_day_preds = pd.DataFrame(next_day_predictions_list)
@@ -771,9 +703,7 @@ if not data.empty:
                 
                 # training_messages_log.append(f"Saving backtest predictions for {ticker} (last 30 days)...") # Logged in sidebar
                 for _, row in bt_pred_df_main.iterrows():
-                    # For historical backtest predictions, training_end_date_used should be the day before the prediction_for_date
-                    training_end_date_for_log = get_previous_trading_day(row['Date'])
-                    save_prediction(ticker, row['Date'], row['Predicted Close'], row['Actual Close'], model_choice, datetime.now(), training_end_date_for_log)
+                    save_prediction(ticker, row['Date'], row['Predicted Close'], row['Actual Close'], model_choice, datetime.now(), end_bt)
             else: st.info("Not enough data in backtest predictions to display.")
         else: st.warning("Could not generate backtest predictions for the main Close model.")
     else: st.info("Not enough data for the 30-day backtest period.")
@@ -798,7 +728,7 @@ if not data.empty:
         feature_cols_fut_train = main_close_model_info['features']
         
         # Need enough historical data to calculate features for the first future day
-        max_hist_window = max(lag_features_list + ma_windows_list + std_windows_list + [rsi_window, macd_short_window, macd_long_window, macd_signal_window, bb_window, bb_std_dev, atr_window, stoch_window])
+        max_hist_window = max(lag_features_list + ma_windows_list + std_windows_list + [rsi_window, macd_short_window, macd_long_window, macd_signal_window, bb_window, atr_window, stoch_window])
         
         df_hist_context_fut = data[data['Date'] <= pd.to_datetime(end_bt)].tail(max_hist_window + 5).copy() # +5 for buffer
         
@@ -852,9 +782,7 @@ if not data.empty:
             st.plotly_chart(fig_future_chart, use_container_width=True)
             # training_messages_log.append(f"Saving {len(future_predictions_output_list)} future predictions...") # Logged in sidebar
             for pred_item in future_predictions_output_list:
-                # For future predictions, training_end_date_used should be the day before the prediction_for_date
-                training_end_date_for_log = get_previous_trading_day(pred_item['Date'])
-                save_prediction(ticker, pred_item['Date'], pred_item['Predicted Close'], np.nan, model_choice, datetime.now(), training_end_date_for_log)
+                save_prediction(ticker, pred_item['Date'], pred_item['Predicted Close'], np.nan, model_choice, datetime.now(), end_bt)
         else:
             st.warning("Could not generate future predictions. Check logs.")
     else:
